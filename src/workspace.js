@@ -1,5 +1,6 @@
 const MAX_SIZE = 50 * 1024 * 1024;
-const EXTENSIONS = ['csv', 'xlsx', 'docx', 'md', 'pdf'];
+const EXTENSIONS = ['csv', 'xlsx', 'docx', 'md'];
+const DOCUMENT_ACCEPT = '.csv,.xlsx,.docx,.md';
 const JURISDICTIONS = [
   ['rgpd', 'Europa / RGPD-GDPR'], ['chile', 'Chile'], ['brasil', 'Brasil'], ['mexico', 'México'],
   ['colombia', 'Colombia'], ['argentina', 'Argentina'], ['uk', 'UK GDPR'], ['ccpa', 'CCPA / CPRA'],
@@ -8,6 +9,8 @@ const JURISDICTIONS = [
 export function mountWorkspace(root) {
   const state = { view: 'anonymize', files: [], jurisdictions: new Set(), restoreDocument: null, restoreMap: null, encrypt: false, jobs: [] };
   root.innerHTML = markup();
+  root.querySelectorAll('#file-input, #restore-document-input').forEach((input) => input.setAttribute('accept', DOCUMENT_ACCEPT));
+  root.querySelector('[data-drop="documents"] span').textContent = 'CSV, XLSX, DOCX o MD · máximo 50 MB';
   const publicShell = document.querySelectorAll('.site-header, #inicio, .site-footer');
 
   root.addEventListener('click', (event) => {
