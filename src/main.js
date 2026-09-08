@@ -1,4 +1,5 @@
 import './style.css';
+import { mountWorkspace } from './workspace.js';
 
 document.querySelector('#app').innerHTML = `
   <header class="site-header">
@@ -10,7 +11,7 @@ document.querySelector('#app').innerHTML = `
       <nav class="main-nav" aria-label="Navegación principal">
         <a href="#como-funciona">Cómo funciona</a>
         <a href="#seguridad">Seguridad</a>
-        <a class="nav-cta" href="#comenzar">Comenzar <span aria-hidden="true">↗</span></a>
+        <a class="nav-cta" href="#area-trabajo">Iniciar sesión <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>
@@ -22,7 +23,7 @@ document.querySelector('#app').innerHTML = `
         <h1 id="hero-title">Comparte ideas.<br /><em>No tus datos.</em></h1>
         <p class="hero-lead">Anonimiza documentos sensibles antes de enviarlos a cualquier herramienta de IA. Mantén el contexto útil y deja fuera lo que debe permanecer privado.</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#comenzar">Comenzar a anonimizar <span aria-hidden="true">→</span></a>
+          <a class="button button-primary" href="#area-trabajo">Comenzar a anonimizar <span aria-hidden="true">→</span></a>
           <a class="button button-quiet" href="#como-funciona">Ver cómo funciona <span aria-hidden="true">↓</span></a>
         </div>
         <p class="hero-note"><span aria-hidden="true">◌</span> Sin llamadas a servicios de IA durante el proceso</p>
@@ -74,6 +75,7 @@ document.querySelector('#app').innerHTML = `
   </main>
 
   <footer class="site-footer"><div class="shell footer-inner"><a class="brand" href="#inicio"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>Anonimizador</span></a><p>Privacidad para el trabajo que aún no quieres compartir.</p><nav aria-label="Enlaces del pie de página"><a href="#seguridad">Seguridad</a><a href="#seguridad">Privacidad</a><a href="mailto:hola@anonimizador.local">Contacto</a></nav></div></footer>
+  <div id="area-trabajo" aria-label="Área de trabajo"></div>
 `;
 
 const revealItems = document.querySelectorAll('.reveal');
@@ -92,3 +94,5 @@ if (prefersReducedMotion) {
   }, { threshold: 0.14 });
   revealItems.forEach((item) => revealObserver.observe(item));
 }
+
+mountWorkspace(document.querySelector('#area-trabajo'));
