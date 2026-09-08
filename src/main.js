@@ -11,7 +11,7 @@ document.querySelector('#app').innerHTML = `
       <nav class="main-nav" aria-label="Navegación principal">
         <a href="#como-funciona">Cómo funciona</a>
         <a href="#seguridad">Seguridad</a>
-        <a class="nav-cta" href="#area-trabajo">Comenzar <span aria-hidden="true">↗</span></a>
+        <a class="nav-cta" href="#area-trabajo">Iniciar sesión <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>

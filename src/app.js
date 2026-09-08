@@ -10,12 +10,15 @@ export function mountWorkspace(root) {
   bindWorkspaceEvents(root);
   subscribe(() => renderWorkspace(root));
   renderWorkspace(root);
+  let wasWorkspace = false;
   syncHashRoute();
   window.addEventListener('hashchange', syncHashRoute);
 
   function syncHashRoute() {
     const isWorkspace = window.location.hash === '#area-trabajo';
+    const changedView = isWorkspace !== wasWorkspace;
     root.hidden = !isWorkspace;
+    document.body.classList.toggle('workspace-mode', isWorkspace);
     document.querySelectorAll('.site-header, #inicio, .site-footer').forEach((element) => {
       element.hidden = isWorkspace;
     });
@@ -25,6 +28,8 @@ export function mountWorkspace(root) {
     } else {
       document.title = 'Anonimizador | Protege antes de compartir';
     }
+    if (changedView) window.scrollTo({ top: 0, left: 0, behavior: 'auto' });
+    wasWorkspace = isWorkspace;
   }
 }
 

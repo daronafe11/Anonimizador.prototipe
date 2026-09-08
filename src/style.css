@@ -56,6 +56,7 @@ h1, h2, h3, p { margin-top: 0; } h1, h2 { font-family: var(--display); font-weig
 
 /* Workspace */
 .workspace-shell { background: var(--paper); min-height: 100vh; }
+body.workspace-mode { background: var(--paper); }
 .workspace-header { background: var(--ink); color: var(--white); padding: 1.4rem max(1rem, calc((100% - var(--shell)) / 2)) 0; }
 .workspace-brand-row, .workspace-title-row { align-items: center; display: flex; justify-content: space-between; }
 .workspace-brand { color: var(--white); }.workspace-brand .brand-mark span { background: var(--accent); }
