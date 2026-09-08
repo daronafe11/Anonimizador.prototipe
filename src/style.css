@@ -1,14 +1,14 @@
 :root {
-  --ink: #17332e;
-  --ink-soft: #5d6d67;
-  --paper: #f7f4ed;
-  --paper-deep: #e6eee8;
-  --line: #d1dbd2;
-  --accent: #f0a08c;
-  --accent-deep: #b95f4b;
-  --coral: #d97861;
-  --coral-deep: #ad5946;
-  --white: #fffdf8;
+  --ink: #123b3e;
+  --ink-soft: #587276;
+  --paper: #f2f8f6;
+  --paper-deep: #e1efec;
+  --line: #c7dcd9;
+  --accent: #91d5c5;
+  --accent-deep: #247f7d;
+  --coral: #3f91ae;
+  --coral-deep: #246a86;
+  --white: #fafffd;
   --space-1: 0.5rem;
   --space-2: 1rem;
   --space-3: 1.5rem;
