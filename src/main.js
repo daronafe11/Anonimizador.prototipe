@@ -20,7 +20,7 @@ document.querySelector('#app').innerHTML = `
     <section class="hero shell" aria-labelledby="hero-title">
       <div class="hero-copy reveal">
         <p class="eyebrow"><span class="status-dot" aria-hidden="true"></span> Privacidad antes de la conversación</p>
-        <h1 id="hero-title">Comparte ideas.<br /><em>No tus datos.</em></h1>
+        <h1 id="hero-title">Comparte tus ideas.<br /><em>Protege tus datos</em></h1>
         <p class="hero-lead">Anonimiza documentos sensibles antes de enviarlos a cualquier herramienta de IA. Mantén el contexto útil y deja fuera lo que debe permanecer privado.</p>
         <div class="hero-actions">
           <a class="button button-primary" href="#area-trabajo">Comenzar a anonimizar <span aria-hidden="true">→</span></a>
