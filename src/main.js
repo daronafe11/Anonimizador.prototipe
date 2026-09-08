@@ -1,4 +1,5 @@
 import './style.css';
+import { mountWorkspace } from './app.js';
 
 document.querySelector('#app').innerHTML = `
   <header class="site-header">
@@ -10,7 +11,7 @@ document.querySelector('#app').innerHTML = `
       <nav class="main-nav" aria-label="Navegación principal">
         <a href="#como-funciona">Cómo funciona</a>
         <a href="#seguridad">Seguridad</a>
-        <a class="nav-cta" href="#comenzar">Comenzar <span aria-hidden="true">↗</span></a>
+        <a class="nav-cta" href="#area-trabajo">Comenzar <span aria-hidden="true">↗</span></a>
       </nav>
     </div>
   </header>
@@ -22,7 +23,7 @@ document.querySelector('#app').innerHTML = `
         <h1 id="hero-title">Comparte ideas.<br /><em>No tus datos.</em></h1>
         <p class="hero-lead">Anonimiza documentos sensibles antes de enviarlos a cualquier herramienta de IA. Mantén el contexto útil y deja fuera lo que debe permanecer privado.</p>
         <div class="hero-actions">
-          <a class="button button-primary" href="#comenzar">Comenzar a anonimizar <span aria-hidden="true">→</span></a>
+          <a class="button button-primary" href="#area-trabajo">Comenzar a anonimizar <span aria-hidden="true">→</span></a>
           <a class="button button-quiet" href="#como-funciona">Ver cómo funciona <span aria-hidden="true">↓</span></a>
         </div>
         <p class="hero-note"><span aria-hidden="true">◌</span> Sin llamadas a servicios de IA durante el proceso</p>
@@ -70,10 +71,11 @@ document.querySelector('#app').innerHTML = `
       <div class="shell security-layout"><div class="security-intro reveal"><p class="eyebrow">Protección por diseño</p><h2 id="security-title">La privacidad no es una opción avanzada.</h2><p>Es el punto de partida de cada documento.</p></div><ul class="security-list"><li class="reveal"><span class="security-icon" aria-hidden="true">◇</span><div><h3>Sin IA en la anonimización</h3><p>El documento no se envía a servicios de inteligencia artificial durante el proceso.</p></div></li><li class="reveal"><span class="security-icon" aria-hidden="true">⌁</span><div><h3>Sin rastros en el navegador</h3><p>Los mapas y las claves no se guardan en tu navegador.</p></div></li><li class="reveal"><span class="security-icon" aria-hidden="true">⊙</span><div><h3>Infraestructura controlada</h3><p>El procesamiento está pensado para ejecutarse localmente o en un entorno bajo tu control.</p></div></li></ul></div>
     </section>
 
-    <section class="start-section shell" id="comenzar" aria-labelledby="start-title"><div class="start-panel reveal"><div><p class="eyebrow">Siguiente paso</p><h2 id="start-title">Tu documento merece<br /><em>un momento de cuidado.</em></h2></div><div class="start-action"><p>La carga de documentos estará disponible en la próxima versión.</p><a class="button button-primary" href="mailto:hola@anonimizador.local">Preparar mi espacio <span aria-hidden="true">→</span></a></div></div></section>
+    <section class="start-section shell" id="comenzar" aria-labelledby="start-title"><div class="start-panel reveal"><div><p class="eyebrow">Siguiente paso</p><h2 id="start-title">Tu documento merece<br /><em>un momento de cuidado.</em></h2></div><div class="start-action"><p>Prepara tu documento en un espacio controlado.</p><a class="button button-primary" href="#area-trabajo">Abrir área de trabajo <span aria-hidden="true">→</span></a></div></div></section>
   </main>
 
   <footer class="site-footer"><div class="shell footer-inner"><a class="brand" href="#inicio"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>Anonimizador</span></a><p>Privacidad para el trabajo que aún no quieres compartir.</p><nav aria-label="Enlaces del pie de página"><a href="#seguridad">Seguridad</a><a href="#seguridad">Privacidad</a><a href="mailto:hola@anonimizador.local">Contacto</a></nav></div></footer>
+  <div id="workspace-root"></div>
 `;
 
 const revealItems = document.querySelectorAll('.reveal');
@@ -92,3 +94,5 @@ if (prefersReducedMotion) {
   }, { threshold: 0.14 });
   revealItems.forEach((item) => revealObserver.observe(item));
 }
+
+mountWorkspace(document.querySelector('#workspace-root'));
