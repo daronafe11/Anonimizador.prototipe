@@ -1,0 +1,1369 @@
+# =============================================================================
+# anonimizar.py — Anonimizador multi-jurisdiccional v2.2
+#
+# Jurisdicciones soportadas:
+#   rgpd      — UE (RGPD/GDPR 2016/679)
+#   chile     — Ley 21.719 / Ley 19.628 (Chile)
+#   brasil    — LGPD Lei 13.709/2018 (Brasil)
+#   mexico    — LFPDPPP 2010/2025 (México)
+#   colombia  — Ley 1581/2012 + Decreto 1377/2013 (Colombia)
+#   argentina — Ley 25.326 (Argentina)
+#   uk        — UK GDPR / DPA 2018 / DUAA 2025
+#   ccpa      — CCPA/CPRA + regs. enero 2026 (California, EE.UU.)
+#   todo      — Activa todas las jurisdicciones simultáneamente
+#
+# Uso — anonimización:
+#   python anonimizar.py archivo.csv                  → genera archivo_anon.csv + archivo_anon.csv.key.json
+#   python anonimizar.py *.docx --ley chile           → varios archivos
+#   python anonimizar.py C:/exports/ --ley rgpd       → carpeta completa
+#   python anonimizar.py datos.csv --salida limpio.csv → salida explícita
+#   python anonimizar.py C:/exports/ --carpeta-salida C:/anon/
+#   python anonimizar.py --lista-leyes
+#
+# Uso — restauración:
+#   python anonimizar.py archivo_anon.csv --restaurar
+#     → busca archivo_anon.csv.key.json en la misma carpeta → genera archivo_anon_restaurado.csv
+#   python anonimizar.py archivo_anon.csv --restaurar --mapa otra_ruta.key.json
+#     → usa el archivo de mapa indicado explícitamente
+#
+# Formatos soportados: .csv, .xlsx, .md, .docx
+# Salida anonimización: [nombre]_anon.[ext] + [nombre]_anon.[ext].key.json
+# Salida restauración:  [nombre]_restaurado.[ext]
+# =============================================================================
+
+import os
+import re
+import sys
+import json
+import argparse
+import datetime
+
+# =============================================================================
+# PARTE 0: Argumentos de línea de comandos
+# =============================================================================
+
+JURISDICCIONES_DISPONIBLES = ["rgpd", "chile", "brasil", "mexico", "colombia", "argentina", "uk", "ccpa"]
+
+# Identificadores públicos y estables para CLI y futuro frontend.
+# Los valores son los tipos internos usados por Presidio.
+CATEGORIAS = {
+    "persona": "PERSON",
+    "email": "EMAIL_ADDRESS",
+    "telefono": "PHONE_NUMBER",
+    "iban": "IBAN_CODE",
+    "tarjeta": "CREDIT_CARD",
+    "fecha": "DATE_TIME",
+    "ip": "IP_ADDRESS",
+    "ubicacion": "LOCATION",
+    "direccion": "DIRECCION",
+    "dni-es": "DNI_NIE",
+    "rut-cl": "RUT_CL",
+    "cpf-br": "CPF_BR",
+    "cnpj-br": "CNPJ_BR",
+    "curp-mx": "CURP_MX",
+    "rfc-mx": "RFC_MX",
+    "nit-co": "NIT_CO",
+    "dni-ar": "DNI_AR",
+    "cuit-ar": "CUIT_AR",
+    "nino-uk": "NINO_UK",
+    "ssn-us": "SSN_US",
+    "dl-us": "DL_US",
+}
+
+parser = argparse.ArgumentParser(
+    description="Anonimizador multi-jurisdiccional de datos personales.",
+    formatter_class=argparse.RawTextHelpFormatter,
+    epilog=(
+        "Ejemplos:\n"
+        "  python anonimizar.py informe.docx\n"
+        "  python anonimizar.py datos.csv clientes.xlsx --ley chile\n"
+        "  python anonimizar.py C:/exports/ --ley rgpd\n"
+        "  python anonimizar.py datos.csv --salida datos_limpio.csv --ley rgpd\n"
+        "  python anonimizar.py C:/exports/ --carpeta-salida C:/anon/ --ley todo\n"
+        "  python anonimizar.py informe.docx --ley rgpd --excluir ubicacion dni-es\n"
+        "  python anonimizar.py informe.docx --ley rgpd --incluir persona email\n"
+        "  python anonimizar.py datos_anon.csv --restaurar\n"
+        "  python anonimizar.py datos_anon.csv --restaurar --mapa datos_anon.csv.key.json\n"
+    )
+)
+parser.add_argument(
+    "entradas", nargs="*", metavar="ARCHIVO_O_CARPETA",
+    help="Archivos o carpetas a procesar. Acepta varios a la vez."
+)
+parser.add_argument(
+    "--ley", nargs="+", default=["rgpd"],
+    metavar="LEY",
+    help=(
+        "Jurisdicción(es) a aplicar:\n"
+        "  rgpd       UE — RGPD/GDPR 2016/679\n"
+        "  chile      Chile — Ley 21.719 / 19.628\n"
+        "  brasil     Brasil — LGPD Lei 13.709/2018\n"
+        "  mexico     México — LFPDPPP 2010/2025\n"
+        "  colombia   Colombia — Ley 1581/2012\n"
+        "  argentina  Argentina — Ley 25.326\n"
+        "  uk         UK GDPR / DPA 2018 / DUAA 2025\n"
+        "  ccpa       California — CCPA/CPRA\n"
+        "  todo       Activa todas las anteriores\n"
+    )
+)
+parser.add_argument(
+    "--salida", metavar="ARCHIVO",
+    help="Ruta de salida explícita (solo válido con un único archivo de entrada)."
+)
+parser.add_argument(
+    "--carpeta-salida", metavar="CARPETA",
+    help="Carpeta de destino para todos los archivos procesados."
+)
+parser.add_argument(
+    "--lista-leyes", action="store_true",
+    help="Muestra las jurisdicciones disponibles y termina."
+)
+parser.add_argument(
+    "--lista-categorias", action="store_true",
+    help="Muestra las categorías configurables disponibles y termina."
+)
+grupo_categorias = parser.add_mutually_exclusive_group()
+grupo_categorias.add_argument(
+    "--incluir", nargs="+", metavar="CATEGORIA",
+    help="Anonimiza solo las categorías indicadas. Consulta --lista-categorias."
+)
+grupo_categorias.add_argument(
+    "--excluir", nargs="+", metavar="CATEGORIA",
+    help="Anonimiza todo lo activo salvo las categorías indicadas."
+)
+parser.add_argument(
+    "--restaurar", action="store_true",
+    help=(
+        "Modo restauración: reemplaza los tokens numerados por los valores originales.\n"
+        "Requiere el archivo .key.json generado durante la anonimización."
+    )
+)
+parser.add_argument(
+    "--mapa", metavar="ARCHIVO_KEY",
+    help=(
+        "Ruta explícita al archivo .key.json de mapa.\n"
+        "Por defecto se busca [archivo_anon].[ext].key.json en la misma carpeta."
+    )
+)
+parser.add_argument(
+    "--cifrar-mapa", action="store_true",
+    help=(
+        "Cifra el .key.json con una clave (AES vía Fernet). El mapa con PII queda\n"
+        "ilegible sin la clave. Requiere --clave o la variable de entorno ANON_CLAVE."
+    )
+)
+parser.add_argument(
+    "--clave", metavar="PASSPHRASE",
+    help=(
+        "Clave para cifrar (--cifrar-mapa) o descifrar (--restaurar) el mapa.\n"
+        "MENOS SEGURO: queda en el historial del shell y en la lista de procesos.\n"
+        "Preferible: variable de entorno ANON_CLAVE (no deja rastro en argv)."
+    )
+)
+parser.add_argument(
+    "--pedir-clave", action="store_true",
+    help=(
+        "Pide la clave por terminal de forma interactiva (sin dejar rastro).\n"
+        "Solo para uso interactivo: nunca usar en ejecución automatizada."
+    )
+)
+args = parser.parse_args()
+
+# Resolución de la clave del mapa. Orden de preferencia (de menos a más seguro):
+#   1. --clave (argv)  — cómodo pero queda en historial/procesos
+#   2. ANON_CLAVE      — variable de entorno
+#   3. getpass         — petición interactiva por terminal (no deja rastro)
+# En entornos no interactivos (sin TTY, p.ej. ejecución por un agente) se usan
+# solo 1 y 2; si no hay clave, el llamador decide cómo fallar.
+_clave_cache = {"valor": None, "resuelta": False}
+
+
+def resolver_clave(confirmar: bool = False):
+    if _clave_cache["resuelta"]:
+        return _clave_cache["valor"]
+    clave = args.clave or os.environ.get("ANON_CLAVE")
+    # getpass SOLO bajo petición explícita (--pedir-clave). En Windows getpass
+    # lee de la consola por msvcrt ignorando stdin, así que en ejecución
+    # automatizada bloquearía: por eso nunca se invoca sin el flag.
+    if not clave and args.pedir_clave:
+        try:
+            import getpass
+            clave = getpass.getpass("Clave del mapa: ") or None
+            if clave and confirmar and clave != getpass.getpass("Repite la clave: "):
+                print("[ERROR] Las claves no coinciden.")
+                sys.exit(1)
+        except (EOFError, OSError, KeyboardInterrupt):
+            clave = None
+    _clave_cache.update(valor=clave, resuelta=True)
+    return clave
+
+if args.lista_leyes:
+    print("Jurisdicciones disponibles:")
+    for ley in JURISDICCIONES_DISPONIBLES:
+        print(f"  {ley}")
+    sys.exit(0)
+
+if args.lista_categorias:
+    print("Categorías disponibles:")
+    for categoria in CATEGORIAS:
+        print(f"  {categoria}")
+    sys.exit(0)
+
+categorias_solicitadas = set(args.incluir or args.excluir or [])
+categorias_invalidas = categorias_solicitadas - set(CATEGORIAS)
+if categorias_invalidas:
+    parser.error(
+        f"categoría(s) desconocida(s): {', '.join(sorted(categorias_invalidas))}. "
+        "Usa --lista-categorias para consultar los valores válidos."
+    )
+if args.restaurar and categorias_solicitadas:
+    parser.error("--incluir y --excluir solo se aplican al anonimizar.")
+
+# =============================================================================
+# Cifrado opcional del mapa (.key.json) — AES vía Fernet, clave derivada con PBKDF2
+# =============================================================================
+
+def _derivar_fernet(clave: str, salt: bytes, iteraciones: int = 200_000):
+    import base64
+    from cryptography.hazmat.primitives.kdf.pbkdf2 import PBKDF2HMAC
+    from cryptography.hazmat.primitives import hashes
+    from cryptography.fernet import Fernet
+    kdf = PBKDF2HMAC(algorithm=hashes.SHA256(), length=32, salt=salt, iterations=iteraciones)
+    return Fernet(base64.urlsafe_b64encode(kdf.derive(clave.encode("utf-8"))))
+
+
+def cifrar_mapa_dict(datos: dict, clave: str) -> dict:
+    """Devuelve un sobre cifrado: solo metadatos de cifrado en claro; el resto
+    (incluido archivo_origen y el mapa) va dentro del bloque cifrado."""
+    import os as _os, base64
+    salt = _os.urandom(16)
+    iteraciones = 200_000
+    f = _derivar_fernet(clave, salt, iteraciones)
+    token = f.encrypt(json.dumps(datos, ensure_ascii=False).encode("utf-8"))
+    return {
+        "version": datos.get("version", "2.3"),
+        "cifrado": True,
+        "kdf": "pbkdf2-sha256",
+        "iteraciones": iteraciones,
+        "salt": base64.b64encode(salt).decode("ascii"),
+        "datos": token.decode("ascii"),
+    }
+
+
+def descifrar_mapa_dict(sobre: dict, clave: str) -> dict:
+    import base64
+    salt = base64.b64decode(sobre["salt"])
+    iteraciones = sobre.get("iteraciones", 200_000)
+    f = _derivar_fernet(clave, salt, iteraciones)
+    return json.loads(f.decrypt(sobre["datos"].encode("ascii")).decode("utf-8"))
+
+
+# Fail-fast: si se va a cifrar, resolver la clave antes de cargar los modelos.
+if args.cifrar_mapa and not args.restaurar:
+    if not resolver_clave(confirmar=True):
+        print("[ERROR] --cifrar-mapa requiere una clave: usa ANON_CLAVE, --pedir-clave "
+              "(interactivo), o --clave (menos seguro).")
+        sys.exit(1)
+
+# =============================================================================
+# PARTE 0b: Modo restauración — inicialización temprana (sin NLP)
+# =============================================================================
+# En modo restauración no se necesita spaCy ni Presidio.
+# Se importan solo los módulos de E/S de archivo.
+
+if args.restaurar:
+    import pandas as pd
+    from docx import Document
+
+    # Patrón de token generado por la anonimización: <PREFIJO-N> (p.ej. <PERSONA-1>,
+    # <DNI-ES-2>). Sirve para detectar tokens presentes en el archivo y residuos
+    # sin mapear. Se rastrea por archivo para informar de pérdidas.
+    _PATRON_TOKEN = re.compile(r"<[A-Z]+(?:-[A-Z]+)*-\d+>")
+    _tokens_vistos = set()
+    _tokens_residuales = set()
+
+    def _reset_seguimiento():
+        _tokens_vistos.clear()
+        _tokens_residuales.clear()
+
+    def restaurar_texto(texto: str, mapa: dict) -> str:
+        if not texto or not texto.strip():
+            return texto
+        # Registrar qué tokens aparecen: los del mapa (vistos) y los que tienen
+        # formato de token pero no están en el mapa (residuos / alterados).
+        for m in _PATRON_TOKEN.finditer(texto):
+            tok = m.group(0)
+            (_tokens_vistos if tok in mapa else _tokens_residuales).add(tok)
+        # Ordenar por longitud descendente para evitar sustituciones parciales
+        for token, original in sorted(mapa.items(), key=lambda x: len(x[0]), reverse=True):
+            texto = texto.replace(token, original)
+        return texto
+
+    def _reporte_restauracion(mapa: dict):
+        no_encontrados = set(mapa) - _tokens_vistos
+        if no_encontrados:
+            muestra = ", ".join(sorted(no_encontrados)[:8])
+            print(f"  [AVISO] {len(no_encontrados)} token(s) del mapa no aparecían en el "
+                  f"archivo (no restaurados): {muestra}"
+                  + (" ..." if len(no_encontrados) > 8 else ""))
+        if _tokens_residuales:
+            muestra = ", ".join(sorted(_tokens_residuales)[:8])
+            print(f"  [AVISO] {len(_tokens_residuales)} token(s) con formato válido sin "
+                  f"entrada en el mapa (posible alteración por IA o mapa erróneo): {muestra}"
+                  + (" ..." if len(_tokens_residuales) > 8 else ""))
+        if not no_encontrados and not _tokens_residuales:
+            print(f"  Cobertura: {len(_tokens_vistos)} token(s) restaurados, sin residuos.")
+
+    def cargar_mapa(ruta_mapa: str) -> dict:
+        with open(ruta_mapa, "r", encoding="utf-8") as f:
+            datos = json.load(f)
+        if datos.get("cifrado"):
+            clave = resolver_clave()
+            if not clave:
+                raise ValueError(
+                    f"El mapa '{os.path.basename(ruta_mapa)}' está cifrado. "
+                    f"Aporta la clave con ANON_CLAVE, --pedir-clave, o --clave."
+                )
+            try:
+                datos = descifrar_mapa_dict(datos, clave)
+            except Exception:
+                raise ValueError("Clave incorrecta o mapa cifrado dañado: no se pudo descifrar.")
+        return datos["mapa"]
+
+    def _mapas_en_carpeta(carpeta: str) -> list:
+        """Lista los archivos .key.json presentes en una carpeta."""
+        if not os.path.isdir(carpeta):
+            return []
+        return sorted(
+            os.path.join(carpeta, n)
+            for n in os.listdir(carpeta)
+            if n.lower().endswith(".key.json")
+        )
+
+    def ruta_mapa_para(ruta_entrada: str, mapa_explicito) -> str:
+        """
+        Resuelve qué .key.json usar para un archivo a restaurar.
+        Orden de prioridad:
+          1. --mapa explícito (se aplica a todas las entradas).
+          2. [archivo].key.json exacto, junto al archivo (caso anonimización directa).
+          3. Si en la carpeta hay un único .key.json, se usa ese (caso archivo
+             devuelto por una IA con nombre distinto pero junto a su mapa original).
+          4. Si hay varios .key.json y ninguno coincide por nombre → error pidiendo --mapa.
+        """
+        if mapa_explicito:
+            return mapa_explicito
+        base = os.path.abspath(ruta_entrada)
+        # 2 — coincidencia exacta por nombre
+        candidato = base + ".key.json"
+        if os.path.isfile(candidato):
+            return candidato
+        # 3 / 4 — buscar en la carpeta del archivo
+        carpeta = os.path.dirname(base)
+        mapas = _mapas_en_carpeta(carpeta)
+        if len(mapas) == 1:
+            return mapas[0]
+        if len(mapas) == 0:
+            raise FileNotFoundError(
+                f"No se encontró ningún .key.json para '{ruta_entrada}'.\n"
+                f"Buscado: {candidato} y archivos .key.json en {carpeta}\n"
+                f"Usa --mapa para indicar la ruta del mapa."
+            )
+        raise FileNotFoundError(
+            f"Hay {len(mapas)} archivos .key.json en {carpeta} y ninguno coincide "
+            f"con el nombre de '{os.path.basename(ruta_entrada)}'.\n"
+            f"Indica cuál usar con --mapa para evitar mezclar tokens de archivos distintos."
+        )
+
+    def ruta_salida_restaurada_para(ruta_entrada: str) -> str:
+        if args.salida:
+            return args.salida
+        nombre_base, ext = os.path.splitext(os.path.basename(ruta_entrada))
+        nombre_restaurado = f"{nombre_base}_restaurado{ext}"
+        if args.carpeta_salida:
+            os.makedirs(args.carpeta_salida, exist_ok=True)
+            return os.path.join(args.carpeta_salida, nombre_restaurado)
+        return os.path.join(os.path.dirname(os.path.abspath(ruta_entrada)), nombre_restaurado)
+
+    def restaurar_csv(ruta_entrada: str, ruta_salida: str, mapa: dict):
+        df = pd.read_csv(ruta_entrada, dtype=str)
+        df = df.map(lambda c: restaurar_texto(c, mapa) if isinstance(c, str) else c)
+        df.to_csv(ruta_salida, index=False)
+        print(f"  CSV restaurado: {ruta_salida}")
+
+    def restaurar_xlsx(ruta_entrada: str, ruta_salida: str, mapa: dict):
+        hojas = pd.read_excel(ruta_entrada, sheet_name=None, dtype=str)
+        hojas_rest = {}
+        for nombre, df in hojas.items():
+            df = df.map(lambda c: restaurar_texto(c, mapa) if isinstance(c, str) else c)
+            hojas_rest[nombre] = df
+        with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
+            for nombre, df in hojas_rest.items():
+                df.to_excel(writer, sheet_name=nombre, index=False)
+        print(f"  XLSX restaurado: {ruta_salida}")
+
+    def restaurar_md(ruta_entrada: str, ruta_salida: str, mapa: dict):
+        with open(ruta_entrada, "r", encoding="utf-8") as f:
+            lineas = f.readlines()
+        lineas_rest = [restaurar_texto(l, mapa) for l in lineas]
+        with open(ruta_salida, "w", encoding="utf-8") as f:
+            f.writelines(lineas_rest)
+        print(f"  MD restaurado: {ruta_salida}")
+
+    def restaurar_docx(ruta_entrada: str, ruta_salida: str, mapa: dict):
+        doc = Document(ruta_entrada)
+        for parrafo in doc.paragraphs:
+            for run in parrafo.runs:
+                run.text = restaurar_texto(run.text, mapa)
+        for tabla in doc.tables:
+            for fila in tabla.rows:
+                for celda in fila.cells:
+                    for parrafo in celda.paragraphs:
+                        for run in parrafo.runs:
+                            run.text = restaurar_texto(run.text, mapa)
+        doc.save(ruta_salida)
+        print(f"  DOCX restaurado: {ruta_salida}")
+
+    RESTAURADORES = {
+        ".csv":  restaurar_csv,
+        ".xlsx": restaurar_xlsx,
+        ".md":   restaurar_md,
+        ".docx": restaurar_docx,
+    }
+
+    def recopilar_archivos_restaurar(entradas: list) -> list:
+        """
+        Expande archivos y carpetas en rutas de archivos a restaurar.
+        Excluye los propios .key.json y los archivos ya restaurados (_restaurado).
+        En carpetas, solo recorre el primer nivel.
+        """
+        rutas = []
+        for entrada in entradas:
+            entrada = os.path.abspath(entrada)
+            if os.path.isdir(entrada):
+                for nombre in sorted(os.listdir(entrada)):
+                    ruta = os.path.join(entrada, nombre)
+                    if os.path.isfile(ruta):
+                        rutas.append(ruta)
+            elif os.path.isfile(entrada):
+                rutas.append(entrada)
+            else:
+                print(f"  [AVISO] No encontrado: {entrada}")
+        # Filtrar mapas y salidas previas
+        filtradas = []
+        for r in rutas:
+            base = os.path.basename(r).lower()
+            ext = os.path.splitext(r)[1].lower()
+            if base.endswith(".key.json"):
+                continue
+            if os.path.splitext(os.path.basename(r))[0].endswith("_restaurado"):
+                continue
+            if ext not in RESTAURADORES:
+                print(f"  [OMITIDO] {r} (extensión no soportada)")
+                continue
+            filtradas.append(r)
+        return filtradas
+
+    if not args.entradas:
+        parser.print_help()
+        sys.exit(0)
+
+    archivos_rest = recopilar_archivos_restaurar(args.entradas)
+
+    if args.salida and len(archivos_rest) > 1:
+        print("[ERROR] --salida solo es válido con un único archivo de entrada.")
+        sys.exit(1)
+
+    if not archivos_rest:
+        print("No se encontraron archivos para restaurar.")
+        sys.exit(0)
+
+    print(f"Modo: RESTAURACIÓN — archivos a procesar: {len(archivos_rest)}\n")
+    for ruta_entrada in archivos_rest:
+        extension = os.path.splitext(ruta_entrada)[1].lower()
+        print(f"Restaurando: {ruta_entrada}")
+        try:
+            ruta_mapa = ruta_mapa_para(ruta_entrada, args.mapa)
+            mapa = cargar_mapa(ruta_mapa)
+            print(f"  Mapa cargado: {ruta_mapa} ({len(mapa)} tokens)")
+            ruta_salida = ruta_salida_restaurada_para(ruta_entrada)
+            _reset_seguimiento()
+            RESTAURADORES[extension](ruta_entrada, ruta_salida, mapa)
+            _reporte_restauracion(mapa)
+        except Exception as e:
+            print(f"  [ERROR] {e}")
+
+    sys.exit(0)
+
+# =============================================================================
+# PARTE 1: Modelos de lenguaje — spaCy multilingüe
+# =============================================================================
+
+import spacy
+import pandas as pd
+from docx import Document
+from langdetect import detect, LangDetectException
+
+from presidio_analyzer import AnalyzerEngine, PatternRecognizer, Pattern
+from presidio_analyzer.nlp_engine import NlpEngineProvider
+
+leyes_activas = set(JURISDICCIONES_DISPONIBLES if "todo" in args.ley else args.ley)
+leyes_invalidas = leyes_activas - set(JURISDICCIONES_DISPONIBLES)
+if leyes_invalidas:
+    print(f"[ERROR] Jurisdicción(es) desconocida(s): {', '.join(leyes_invalidas)}")
+    print(f"Valores válidos: {', '.join(JURISDICCIONES_DISPONIBLES)}, todo")
+    sys.exit(1)
+
+print(f"Jurisdicciones activas: {', '.join(sorted(leyes_activas))}\n")
+
+MODELOS_IDIOMA = {
+    "es": "es_core_news_lg",
+    "en": "en_core_web_lg",
+    "fr": "fr_core_news_lg",
+    "de": "de_core_news_lg",
+    "it": "it_core_news_lg",
+    "pt": "pt_core_news_lg",
+    "nl": "nl_core_news_lg",
+}
+
+# ANON_IDIOMAS limita qué modelos cargar (lista separada por comas, p.ej. "es" o
+# "es,en"). Cada modelo grande pesa cientos de MB; cargar solo los necesarios
+# acelera el arranque notablemente. Sin la variable, se cargan todos los instalados.
+_idiomas_pedidos = [
+    c.strip().lower() for c in os.environ.get("ANON_IDIOMAS", "").split(",") if c.strip()
+]
+if _idiomas_pedidos:
+    print(f"Modelos limitados por ANON_IDIOMAS: {', '.join(_idiomas_pedidos)}")
+
+print("Comprobando modelos de idioma disponibles:")
+modelos_cargados = []
+idiomas_disponibles = []
+
+for lang_code, model_name in MODELOS_IDIOMA.items():
+    if _idiomas_pedidos and lang_code not in _idiomas_pedidos:
+        continue
+    try:
+        spacy.load(model_name)
+        modelos_cargados.append({"lang_code": lang_code, "model_name": model_name})
+        idiomas_disponibles.append(lang_code)
+        print(f"  OK  {lang_code} ({model_name})")
+    except OSError:
+        print(f"  --  {lang_code} ({model_name}) no instalado — omitido")
+
+if not modelos_cargados:
+    raise RuntimeError(
+        "No hay ningún modelo de spaCy instalado.\n"
+        "Instala al menos uno con: python -m spacy download es_core_news_lg"
+    )
+
+idioma_por_defecto = idiomas_disponibles[0]
+
+provider = NlpEngineProvider(nlp_configuration={
+    "nlp_engine_name": "spacy",
+    "models": modelos_cargados
+})
+nlp_engine = provider.create_engine()
+analyzer = AnalyzerEngine(
+    nlp_engine=nlp_engine,
+    supported_languages=idiomas_disponibles
+)
+
+print(f"\nMotor listo. Idiomas activos: {', '.join(idiomas_disponibles)}\n")
+
+# =============================================================================
+# PARTE 2: Mapa de etiquetas y entidades universales
+# =============================================================================
+
+ETIQUETAS = {
+    "PERSON":          "PERSONA",
+    "EMAIL_ADDRESS":   "EMAIL",
+    "PHONE_NUMBER":    "TELEFONO",
+    "IBAN_CODE":       "IBAN",
+    "CREDIT_CARD":     "TARJETA",
+    "DATE_TIME":       "FECHA",
+    "IP_ADDRESS":      "IP",
+    "LOCATION":        "UBICACION",
+    "DIRECCION":       "DIRECCION",
+    "DNI_NIE":         "DNI-ES",
+    "RUT_CL":          "RUT-CL",
+    "CPF_BR":          "CPF-BR",
+    "CNPJ_BR":         "CNPJ-BR",
+    "CURP_MX":         "CURP-MX",
+    "RFC_MX":          "RFC-MX",
+    "NIT_CO":          "NIT-CO",
+    "CUIT_AR":         "CUIT-AR",
+    "DNI_AR":          "DNI-AR",
+    "NINO_UK":         "NINO-UK",
+    "SSN_US":          "SSN-US",
+    "DL_US":           "DL-US",
+}
+
+ENTIDADES_BASE = [
+    "PERSON", "EMAIL_ADDRESS", "PHONE_NUMBER",
+    "IBAN_CODE", "CREDIT_CARD", "DATE_TIME", "IP_ADDRESS", "LOCATION",
+]
+
+FALSOS_POSITIVOS_PERSONA = {
+    "hola", "buenos", "buenas", "días", "tardes", "noches",
+    "estimado", "estimada", "estimados", "estimadas",
+    "querido", "querida", "saludos", "atentamente", "cordialmente",
+    "señor", "señora", "señorita", "don", "doña",
+    "presidente", "director", "gerente", "cliente", "usuario",
+}
+
+# =============================================================================
+# PARTE 3: Reconocedores por jurisdicción
+# =============================================================================
+
+def _registrar_para_todos(name_prefix, entity, patterns):
+    for lang in idiomas_disponibles:
+        name = f"{name_prefix}_{lang}" if name_prefix else f"{entity}_{lang}"
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=name,
+            patterns=patterns,
+            supported_language=lang,
+            supported_entity=entity,
+        ))
+
+
+def activar_comunes():
+    """Reconocedores universales activos en toda jurisdicción. Direcciones
+    postales (calle + número): spaCy detecta ciudades como LOCATION pero no la
+    vía completa, que es PII directa. Patrón orientado a vías hispanas; cubre
+    las formas más frecuentes con un score moderado para limitar falsos positivos."""
+    via = (
+        r"(?:calle|c/|c\.|avenida|avda\.?|av\.?|plaza|pza\.?|paseo|p\.º|camino|"
+        r"carrer|ronda|travesía|travesia|glorieta|callejón|callejon|pasaje|"
+        r"urbanización|urbanizacion|polígono|poligono|rúa|rua|carretera|ctra\.?)"
+    )
+    patrones_direccion = [
+        # Vía + nombre + número (con nº/num opcional). Acepta piso/puerta tras coma.
+        # (?i): insensible a mayúsculas ("Calle" y "calle").
+        # Score 0.90 > 0.85 de spaCy LOCATION: una dirección completa es más
+        # específica y sensible que una ciudad, y debe ganar el solapamiento
+        # (si no, LOCATION captura solo "Calle Mayor" y la dirección se escapa).
+        Pattern(
+            "Direccion_via_num",
+            r"(?i)" + via + r"\s+[A-Za-zÁÉÍÓÚÜÑáéíóúüñ0-9.\-º'\s]{2,60}?,?\s*(?:n[ºo°.]?\s*)?\d{1,4}"
+            r"(?:\s*,?\s*(?:bis|[0-9]{1,3}\s*[ºª°]?)\s*[A-DEIzqdcha.\-]{0,6})?",
+            0.90,
+        ),
+    ]
+    _registrar_para_todos(None, "DIRECCION", patrones_direccion)
+    print("  [Comunes] Reconocedor de direcciones postales activado.")
+
+
+def activar_rgpd():
+    analyzer.registry.add_recognizer(PatternRecognizer(
+        name="DNI_NIE_ES",
+        patterns=[
+            Pattern("DNI", r"\b\d{8}[A-HJ-NP-TV-Za-hj-np-tv-z]\b", 0.85),
+            Pattern("NIE", r"\b[XYZxyz]\d{7}[A-HJ-NP-TV-Za-hj-np-tv-z]\b", 0.85),
+        ],
+        supported_language="es",
+        supported_entity="DNI_NIE",
+    ))
+    patrones_tel_es = [
+        Pattern("Tel_ES_intl",  r"(?<!\d)(?:\+34|0034)[\s.\-]?[6-9]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{3}\b", 0.95),
+        Pattern("Movil_ES",     r"\b[67]\d{2}[\s.\-]?\d{3}[\s.\-]?\d{3}\b", 0.80),
+        Pattern("Fijo_ES",      r"\b9\d{2}[\s.\-]?\d{3}[\s.\-]?\d{3}\b", 0.75),
+        Pattern("Tel_intl_gen", r"(?<!\d)\+(?!34|0034)\d{1,3}[\s.\-]?\(?\d{1,4}\)?[\s.\-]?\d{2,4}[\s.\-]?\d{2,4}[\s.\-]?\d{0,4}\b", 0.85),
+    ]
+    _registrar_para_todos(None, "PHONE_NUMBER", patrones_tel_es)
+    print("  [RGPD] Reconocedores DNI/NIE + teléfonos ES activados.")
+
+
+def activar_chile():
+    patrones_rut = [
+        Pattern("RUT_puntos",  r"\b\d{1,2}\.\d{3}\.\d{3}-[\dKk]\b", 0.95),
+        Pattern("RUT_sin_pts", r"\b\d{7,8}-[\dKk]\b",               0.85),
+    ]
+    _registrar_para_todos(None, "RUT_CL", patrones_rut)
+    patrones_tel_cl = [
+        Pattern("Tel_CL_movil", r"(?:\+56|0056)?[\s\-]?9[\s\-]?\d{4}[\s\-]?\d{4}\b", 0.90),
+        Pattern("Tel_CL_fijo",  r"(?:\+56|0056)[\s\-]?[2-9]\d{7}\b", 0.85),
+    ]
+    _registrar_para_todos(None, "PHONE_NUMBER", patrones_tel_cl)
+    print("  [Chile — Ley 21.719] Reconocedores RUT/RUN + teléfonos CL activados.")
+
+
+def activar_brasil():
+    patrones_cpf = [
+        Pattern("CPF_puntos", r"\b\d{3}\.\d{3}\.\d{3}-\d{2}\b", 0.95),
+        Pattern("CPF_sin",    r"\b\d{11}\b",                     0.60),
+    ]
+    patrones_cnpj = [
+        Pattern("CNPJ_fmt", r"\b\d{2}\.\d{3}\.\d{3}\/\d{4}-\d{2}\b", 0.95),
+        Pattern("CNPJ_sin", r"\b\d{14}\b",                            0.55),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"CPF_BR_{lang}", patterns=patrones_cpf,
+            supported_language=lang, supported_entity="CPF_BR",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"CNPJ_BR_{lang}", patterns=patrones_cnpj,
+            supported_language=lang, supported_entity="CNPJ_BR",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_BR_{lang}",
+            patterns=[
+                Pattern("Tel_BR_movil", r"(?:\+55|0055)?[\s\-]?\(?\d{2}\)?[\s\-]?9\d{4}[\s\-]?\d{4}\b", 0.90),
+                Pattern("Tel_BR_fijo",  r"(?:\+55|0055)?[\s\-]?\(?\d{2}\)?[\s\-]?\d{4}[\s\-]?\d{4}\b", 0.80),
+            ],
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [Brasil — LGPD] Reconocedores CPF, CNPJ + teléfonos BR activados.")
+
+
+def activar_mexico():
+    patrones_curp = [
+        Pattern("CURP_MX",
+            r"\b[A-Z]{4}\d{6}[HM][A-Z]{5}[B-DF-HJ-NP-TV-Z\d]\d\b",
+            0.92),
+    ]
+    patrones_rfc = [
+        Pattern("RFC_fisica", r"\b[A-Z&Ñ]{4}\d{6}[A-Z0-9]{3}\b", 0.85),
+        Pattern("RFC_moral",  r"\b[A-Z&Ñ]{3}\d{6}[A-Z0-9]{3}\b", 0.80),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"CURP_MX_{lang}", patterns=patrones_curp,
+            supported_language=lang, supported_entity="CURP_MX",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"RFC_MX_{lang}", patterns=patrones_rfc,
+            supported_language=lang, supported_entity="RFC_MX",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_MX_{lang}",
+            patterns=[
+                Pattern("Tel_MX",
+                    r"(?:\+52|0052)?[\s\-]?\(?\d{2,3}\)?[\s\-]?\d{3,4}[\s\-]?\d{4}\b",
+                    0.80),
+            ],
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [México — LFPDPPP] Reconocedores CURP, RFC + teléfonos MX activados.")
+
+
+def activar_colombia():
+    patrones_nit = [
+        Pattern("NIT_CO", r"\b\d{9}-\d\b", 0.90),
+    ]
+    patrones_cc = [
+        Pattern("CC_CO_contexto",
+            r"(?:C\.?C\.?|cédula|documento)\s*:?\s*(\d{6,10})\b",
+            0.85),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"NIT_CO_{lang}", patterns=patrones_nit,
+            supported_language=lang, supported_entity="NIT_CO",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"CC_CO_{lang}", patterns=patrones_cc,
+            supported_language=lang, supported_entity="DNI_NIE",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_CO_{lang}",
+            patterns=[
+                Pattern("Tel_CO_movil", r"(?:\+57|0057)?[\s\-]?3\d{2}[\s\-]?\d{3}[\s\-]?\d{4}\b", 0.90),
+                Pattern("Tel_CO_fijo",  r"(?:\+57|0057)?[\s\-]?\(?\d{1,3}\)?[\s\-]?\d{3}[\s\-]?\d{4}\b", 0.75),
+            ],
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [Colombia — Ley 1581] Reconocedores NIT, CC + teléfonos CO activados.")
+
+
+def activar_argentina():
+    patrones_dni_ar = [
+        Pattern("DNI_AR_puntos", r"\b\d{2}\.\d{3}\.\d{3}\b", 0.85),
+        Pattern("DNI_AR_sin",    r"\b[1-9]\d{6,7}\b",         0.55),
+    ]
+    patrones_cuit = [
+        Pattern("CUIT_AR", r"\b\d{2}-\d{8}-\d\b", 0.95),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"DNI_AR_{lang}", patterns=patrones_dni_ar,
+            supported_language=lang, supported_entity="DNI_AR",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"CUIT_AR_{lang}", patterns=patrones_cuit,
+            supported_language=lang, supported_entity="CUIT_AR",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_AR_{lang}",
+            patterns=[
+                Pattern("Tel_AR",
+                    r"(?:\+54|0054)?[\s\-]?\(?\d{2,4}\)?[\s\-]?1{0,1}\d{4}[\s\-]?\d{4}\b",
+                    0.80),
+            ],
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [Argentina — Ley 25.326] Reconocedores DNI, CUIT/CUIL + teléfonos AR activados.")
+
+
+def activar_uk():
+    patrones_nino = [
+        Pattern("NINO_UK",
+            r"\b(?!BG|GB|NK|KN|TN|NT|ZZ)[A-CEGHJ-PR-TW-Z]{2}[\s]?\d{2}[\s]?\d{2}[\s]?\d{2}[\s]?[A-D]\b",
+            0.92),
+    ]
+    patrones_tel_uk = [
+        Pattern("Tel_UK",
+            r"(?:\+44|0044|0)[\s\-]?\(?\d{2,4}\)?[\s\-]?\d{3,4}[\s\-]?\d{3,4}\b",
+            0.85),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"NINO_UK_{lang}", patterns=patrones_nino,
+            supported_language=lang, supported_entity="NINO_UK",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_UK_{lang}", patterns=patrones_tel_uk,
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [UK — UK GDPR/DPA 2018] Reconocedores NINO + teléfonos UK activados.")
+
+
+def activar_ccpa():
+    patrones_ssn = [
+        Pattern("SSN_US",   r"\b(?!000|666|9\d{2})\d{3}-(?!00)\d{2}-(?!0000)\d{4}\b", 0.95),
+    ]
+    patrones_dl = [
+        Pattern("DL_CA_US", r"\b[A-Z]\d{7}\b", 0.70),
+    ]
+    patrones_tel_us = [
+        Pattern("Tel_US",
+            r"(?:\+1|001)?[\s\-]?\(?\d{3}\)?[\s\-]?\d{3}[\s\-]?\d{4}\b",
+            0.80),
+    ]
+    for lang in idiomas_disponibles:
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"SSN_US_{lang}", patterns=patrones_ssn,
+            supported_language=lang, supported_entity="SSN_US",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"DL_US_{lang}", patterns=patrones_dl,
+            supported_language=lang, supported_entity="DL_US",
+        ))
+        analyzer.registry.add_recognizer(PatternRecognizer(
+            name=f"Telefono_US_{lang}", patterns=patrones_tel_us,
+            supported_language=lang, supported_entity="PHONE_NUMBER",
+        ))
+    print("  [CCPA/CPRA — California] Reconocedores SSN, DL + teléfonos US activados.")
+
+
+# =============================================================================
+# PARTE 4: Activar reconocedores según jurisdicciones seleccionadas
+# =============================================================================
+
+ACTIVADORES = {
+    "rgpd":      activar_rgpd,
+    "chile":     activar_chile,
+    "brasil":    activar_brasil,
+    "mexico":    activar_mexico,
+    "colombia":  activar_colombia,
+    "argentina": activar_argentina,
+    "uk":        activar_uk,
+    "ccpa":      activar_ccpa,
+}
+
+print("Activando reconocedores:")
+activar_comunes()
+for ley in sorted(leyes_activas):
+    ACTIVADORES[ley]()
+
+# Aviso del modo "todo": maximiza cobertura legal pero activa a la vez los
+# reconocedores de baja confianza de varias jurisdicciones (CPF sin formato,
+# DNI argentino, NIT...), que pueden tokenizar secuencias numéricas no-PII
+# (SKUs, números de pedido). Es seguro frente a fugas, pero puede generar falsos
+# positivos. Para datos con muchos códigos numéricos, restringir a una jurisdicción.
+if len(leyes_activas) >= 4:
+    print(
+        "  [AVISO] Varias jurisdicciones activas: máxima cobertura, pero los patrones "
+        "numéricos de baja confianza pueden marcar códigos no personales (SKUs, IDs). "
+        "Si el archivo tiene muchos números, restringe con --ley <jurisdicción>."
+    )
+
+ENTIDADES = ENTIDADES_BASE + [
+    e for e in ETIQUETAS
+    if e not in ENTIDADES_BASE and any(
+        rec.supported_entities and e in rec.supported_entities
+        for rec in analyzer.registry.recognizers
+    )
+]
+
+# Aplicar la selección al final, cuando ya se conocen las entidades disponibles
+# para las jurisdicciones elegidas. Sin flags, la lista queda intacta.
+if args.incluir:
+    tipos_incluidos = {CATEGORIAS[c] for c in args.incluir}
+    ENTIDADES = [e for e in ENTIDADES if e in tipos_incluidos]
+elif args.excluir:
+    tipos_excluidos = {CATEGORIAS[c] for c in args.excluir}
+    ENTIDADES = [e for e in ENTIDADES if e not in tipos_excluidos]
+
+CATEGORIAS_ACTIVAS = [
+    nombre for nombre, entidad in CATEGORIAS.items() if entidad in ENTIDADES
+]
+if not ENTIDADES:
+    parser.error("la selección no deja ninguna categoría activa para las jurisdicciones elegidas.")
+
+print(f"Categorías activas: {', '.join(CATEGORIAS_ACTIVAS)}\n")
+
+# LOCATION necesita PERSON como señal de contexto. Se puede analizar PERSON sin
+# anonimizarla cuando el usuario incluye ubicaciones pero excluye personas.
+ENTIDADES_ANALISIS = ENTIDADES.copy()
+if "LOCATION" in ENTIDADES and "PERSON" not in ENTIDADES_ANALISIS:
+    ENTIDADES_ANALISIS.append("PERSON")
+
+# =============================================================================
+# PARTE 5: Detección de exports de Screaming Frog
+# =============================================================================
+
+COLUMNAS_TEXTO_SF = {
+    "title 1", "title 2",
+    "meta description 1", "meta description 2",
+    "h1-1", "h1-2", "h2-1", "h2-2", "h3-1", "h3-2",
+    "meta keywords 1", "snippet",
+}
+
+def es_archivo_screaming_frog(df) -> bool:
+    cabeceras = {c.lower() for c in df.columns}
+    return {"address", "content type", "status code"}.issubset(cabeceras)
+
+# =============================================================================
+# PARTE 6: Mapa de anonimización — estado por archivo
+# =============================================================================
+# Tokens numerados por tipo: <PERSONA-1>, <PERSONA-2>, <EMAIL-1>, <DNI-ES-1>, etc.
+# El mismo valor original siempre recibe el mismo token dentro del archivo.
+# El mapa se guarda en [archivo_anon].key.json como JSON legible.
+
+_mapa_token_a_original: dict = {}
+_mapa_original_a_token: dict = {}
+_contadores_tipo: dict = {}
+
+# Patrón con el que la anonimización genera tokens. Si el texto FUENTE ya contiene
+# una cadena con este formato (p.ej. un manual que documenta <EMAIL-1>), la
+# restauración podría alterarla. Se detecta para avisar, sin bloquear.
+_PATRON_TOKEN_FUENTE = re.compile(r"<[A-Z]+(?:-[A-Z]+)*-\d+>")
+_colision_token = {"detectada": False}
+
+
+def _reset_mapa():
+    _mapa_token_a_original.clear()
+    _mapa_original_a_token.clear()
+    _contadores_tipo.clear()
+    _colision_token["detectada"] = False
+
+
+def _marcar_colision(texto: str):
+    if texto and "<" in texto and _PATRON_TOKEN_FUENTE.search(texto):
+        _colision_token["detectada"] = True
+
+
+def _token_para(entidad_tipo: str, valor_original: str) -> str:
+    if valor_original in _mapa_original_a_token:
+        return _mapa_original_a_token[valor_original]
+    prefijo = ETIQUETAS.get(entidad_tipo, entidad_tipo)
+    n = _contadores_tipo.get(prefijo, 0) + 1
+    _contadores_tipo[prefijo] = n
+    token = f"<{prefijo}-{n}>"
+    _mapa_original_a_token[valor_original] = token
+    _mapa_token_a_original[token] = valor_original
+    return token
+
+
+CARPETAS_SINCRONIZADAS = ("onedrive", "dropbox", "google drive", "googledrive", "icloud", "box sync")
+
+
+def _asegurar_gitignore(carpeta: str):
+    """Crea o completa un .gitignore en la carpeta de salida para que los mapas
+    .key.json (que contienen PII en claro) nunca se suban a un repositorio."""
+    ruta_gi = os.path.join(carpeta, ".gitignore")
+    patrones = {"*.key.json"}
+    existentes = set()
+    if os.path.isfile(ruta_gi):
+        with open(ruta_gi, "r", encoding="utf-8") as f:
+            existentes = {l.strip() for l in f}
+    faltan = patrones - existentes
+    if faltan:
+        with open(ruta_gi, "a", encoding="utf-8") as f:
+            if existentes:
+                f.write("\n")
+            f.write("# Mapas de anonimización — contienen PII en claro, nunca versionar\n")
+            for p in sorted(faltan):
+                f.write(p + "\n")
+
+
+def _avisar_si_sincronizada(ruta_mapa: str):
+    """Advierte si el mapa con PII queda en una carpeta sincronizada a la nube."""
+    ruta_baja = ruta_mapa.lower()
+    for marca in CARPETAS_SINCRONIZADAS:
+        if marca in ruta_baja:
+            print(
+                f"  [AVISO PRIVACIDAD] El mapa contiene PII en claro y está en una carpeta "
+                f"sincronizada ({marca}). Considera moverlo fuera de la nube o cifrarlo."
+            )
+            break
+
+
+def _guardar_mapa(ruta_anon: str, archivo_origen: str):
+    ruta_mapa = ruta_anon + ".key.json"
+    datos = {
+        "version": "2.3",
+        "ley": sorted(leyes_activas),
+        "categorias": CATEGORIAS_ACTIVAS,
+        "fecha": datetime.datetime.now(datetime.timezone.utc).isoformat(),
+        "archivo_origen": os.path.basename(archivo_origen),
+        "advertencia": "Este archivo contiene datos personales originales. Trátalo con el mismo nivel de protección que el archivo fuente.",
+        "mapa": _mapa_token_a_original.copy(),
+    }
+    clave = resolver_clave() if args.cifrar_mapa else None
+    cifrado = bool(args.cifrar_mapa and clave)
+    contenido = cifrar_mapa_dict(datos, clave) if cifrado else datos
+    with open(ruta_mapa, "w", encoding="utf-8") as f:
+        json.dump(contenido, f, ensure_ascii=False, indent=2)
+    carpeta = os.path.dirname(os.path.abspath(ruta_mapa))
+    _asegurar_gitignore(carpeta)
+    estado = "cifrado" if cifrado else "en claro"
+    print(f"  Mapa guardado ({estado}): {ruta_mapa} ({len(_mapa_token_a_original)} tokens)")
+    if not cifrado:
+        _avisar_si_sincronizada(ruta_mapa)
+
+
+def _reporte_cobertura():
+    """Imprime el desglose de tipos de PII detectados en el último archivo."""
+    if _colision_token["detectada"]:
+        print("  [AVISO] El texto original ya contenía cadenas con formato de token "
+              "(<TIPO-N>); la restauración podría alterarlas. Revisa el resultado.")
+    if not _contadores_tipo:
+        print("  Cobertura: no se detectó ninguna entidad de PII.")
+        return
+    print("  Cobertura de detección (valores únicos por tipo):")
+    for prefijo in sorted(_contadores_tipo, key=lambda p: (-_contadores_tipo[p], p)):
+        print(f"    - {prefijo}: {_contadores_tipo[prefijo]}")
+
+# =============================================================================
+# PARTE 7: Función principal de anonimización de texto
+# =============================================================================
+
+def _detectar_idioma(texto: str) -> str:
+    if len(texto.split()) < 4:
+        return idioma_por_defecto
+    try:
+        idioma = detect(texto)
+        return idioma if idioma in idiomas_disponibles else idioma_por_defecto
+    except LangDetectException:
+        return idioma_por_defecto
+
+
+def _normalizar_mayusculas(texto: str) -> str:
+    palabras = texto.split()
+    if not palabras:
+        return texto
+    prop = sum(1 for p in palabras if p.isalpha() and p.isupper()) / len(palabras)
+    return texto.title() if prop > 0.5 else texto
+
+
+def _detectar_spans(texto: str):
+    """
+    Analiza un texto y devuelve sus spans de PII ya depurados de falsos positivos
+    de PERSON y de solapamientos. NO aplica el filtro de proximidad de LOCATION:
+    devuelve todas las ubicaciones detectadas para que la decisión de conservarlas
+    se tome fuera (a nivel de texto libre o a nivel de fila en datos tabulares).
+    """
+    if not texto or not texto.strip():
+        return []
+
+    _marcar_colision(texto)
+    texto_para_analisis = _normalizar_mayusculas(texto)
+    idioma = _detectar_idioma(texto_para_analisis)
+
+    resultados = analyzer.analyze(
+        text=texto_para_analisis,
+        entities=ENTIDADES_ANALISIS,
+        language=idioma
+    )
+
+    # Descartar falsos positivos de PERSON
+    resultados = [
+        r for r in resultados
+        if not (
+            r.entity_type == "PERSON" and
+            texto[r.start:r.end].lower() in FALSOS_POSITIVOS_PERSONA
+        )
+    ]
+
+    # EMAIL_ADDRESS tiene prioridad sobre URL cuando se solapan
+    for r in resultados:
+        if r.entity_type == "EMAIL_ADDRESS":
+            r.score = 1.0
+
+    # Eliminar solapamientos: conservar la entidad con mayor score
+    resultados_sin_solapamiento = []
+    for r in sorted(resultados, key=lambda x: x.score, reverse=True):
+        solapado = any(
+            r.start < e.end and r.end > e.start
+            for e in resultados_sin_solapamiento
+        )
+        if not solapado:
+            resultados_sin_solapamiento.append(r)
+
+    return resultados_sin_solapamiento
+
+
+def _filtrar_ubicaciones_por_proximidad(texto: str, resultados: list) -> list:
+    """Conserva una LOCATION solo si hay una PERSON a <=120 caracteres en el
+    mismo texto analizado. Usado en texto libre (.md, .docx) para descartar
+    ubicaciones sueltas que spaCy detecta pero que no son PII por sí solas."""
+    personas = [r for r in resultados if r.entity_type == "PERSON"]
+    return [
+        r for r in resultados
+        if r.entity_type != "LOCATION" or any(
+            abs(r.start - p.end) <= 120 or abs(p.start - r.end) <= 120
+            for p in personas
+        )
+    ]
+
+
+def _aplicar_tokens(texto: str, resultados: list) -> str:
+    """Reemplaza los spans dados por tokens numerados, de mayor a menor posición
+    para no invalidar los índices, actualizando el mapa global."""
+    texto_anon = texto
+    for resultado in sorted(resultados, key=lambda r: r.start, reverse=True):
+        if resultado.entity_type not in ENTIDADES:
+            continue
+        valor_original = texto[resultado.start:resultado.end]
+        token = _token_para(resultado.entity_type, valor_original)
+        texto_anon = texto_anon[:resultado.start] + token + texto_anon[resultado.end:]
+    return texto_anon
+
+
+def anonimizar_texto(texto: str) -> str:
+    """Anonimiza un texto libre (línea o párrafo). La proximidad de LOCATION se
+    evalúa dentro del propio texto."""
+    if not texto or not texto.strip():
+        return texto
+    resultados = _detectar_spans(texto)
+    resultados = _filtrar_ubicaciones_por_proximidad(texto, resultados)
+    return _aplicar_tokens(texto, resultados)
+
+
+def anonimizar_fila(celdas: list) -> list:
+    """
+    Anonimiza las celdas de una fila tabular tratando la fila como una unidad de
+    contexto: si cualquier celda de la fila contiene un nombre de persona, las
+    ubicaciones del resto de celdas de esa fila también se anonimizan (la ciudad
+    de una persona en otra columna es dato personal por combinación). Si la fila
+    no contiene ninguna persona, se descartan las ubicaciones sueltas.
+    Solo se analiza cada celda una vez (sin coste NLP adicional por fila).
+    """
+    analizadas = []  # (texto_original, spans) por celda; None si no es str
+    fila_tiene_persona = False
+    for celda in celdas:
+        if isinstance(celda, str) and celda.strip():
+            spans = _detectar_spans(celda)
+            if any(r.entity_type == "PERSON" for r in spans):
+                fila_tiene_persona = True
+            analizadas.append((celda, spans))
+        else:
+            analizadas.append(None)
+
+    salida = []
+    for celda, item in zip(celdas, analizadas):
+        if item is None:
+            salida.append(celda)
+            continue
+        texto, spans = item
+        if not fila_tiene_persona:
+            spans = _filtrar_ubicaciones_por_proximidad(texto, spans)
+        salida.append(_aplicar_tokens(texto, spans))
+    return salida
+
+# =============================================================================
+# PARTE 8: Procesadores por formato de archivo
+# =============================================================================
+
+def _anonimizar_df_por_filas(df):
+    """Aplica anonimizar_fila a cada fila del DataFrame, preservando columnas
+    e índices. La fila es la unidad de contexto para las ubicaciones."""
+    if df.empty:
+        return df
+    return df.apply(
+        lambda fila: pd.Series(anonimizar_fila(list(fila)), index=fila.index),
+        axis=1,
+    )
+
+
+def procesar_csv(ruta_entrada: str, ruta_salida: str):
+    df = pd.read_csv(ruta_entrada, dtype=str)
+    if es_archivo_screaming_frog(df):
+        # Un export de Screaming Frog no es una tabla de personas: cada celda
+        # (title, meta, h1...) es un texto libre independiente, sin contexto de fila.
+        print("  Detectado formato Screaming Frog — procesando solo columnas de texto libre.")
+        for columna in df.columns:
+            if columna.lower() in COLUMNAS_TEXTO_SF:
+                df[columna] = df[columna].apply(
+                    lambda c: anonimizar_texto(c) if isinstance(c, str) else c
+                )
+    else:
+        df = _anonimizar_df_por_filas(df)
+    df.to_csv(ruta_salida, index=False)
+    print(f"  CSV guardado: {ruta_salida}")
+
+
+def procesar_xlsx(ruta_entrada: str, ruta_salida: str):
+    hojas = pd.read_excel(ruta_entrada, sheet_name=None, dtype=str)
+    hojas_anon = {}
+    for nombre, df in hojas.items():
+        hojas_anon[nombre] = _anonimizar_df_por_filas(df)
+    with pd.ExcelWriter(ruta_salida, engine="openpyxl") as writer:
+        for nombre, df in hojas_anon.items():
+            df.to_excel(writer, sheet_name=nombre, index=False)
+    print(f"  XLSX guardado: {ruta_salida}")
+
+
+def procesar_md(ruta_entrada: str, ruta_salida: str):
+    with open(ruta_entrada, "r", encoding="utf-8") as f:
+        lineas = f.readlines()
+    lineas_anon = [anonimizar_texto(l) for l in lineas]
+    with open(ruta_salida, "w", encoding="utf-8") as f:
+        f.writelines(lineas_anon)
+    print(f"  MD guardado: {ruta_salida}")
+
+
+def _anonimizar_parrafo_docx(parrafo):
+    """
+    Anonimiza un párrafo completo, no run por run. Word fragmenta el texto en
+    runs arbitrarios ("Juan Gar" + "cía"), de modo que analizar cada run aislado
+    deja escapar nombres partidos. Se analiza el texto unido del párrafo y, solo
+    si hay detecciones, se vuelca el resultado en el primer run y se vacían los
+    demás. Los párrafos sin PII conservan sus runs y formato intactos.
+    """
+    runs = parrafo.runs
+    if not runs:
+        return
+    texto_completo = "".join(r.text for r in runs)
+    if not texto_completo.strip():
+        return
+    texto_anon = anonimizar_texto(texto_completo)
+    if texto_anon == texto_completo:
+        return  # sin cambios: no se toca el formato del párrafo
+    runs[0].text = texto_anon
+    for r in runs[1:]:
+        r.text = ""
+
+
+def _anonimizar_contenedor_docx(contenedor):
+    """Recorre los párrafos y tablas (recursivas) de un contenedor: cuerpo del
+    documento, celda de tabla, encabezado o pie de página."""
+    for parrafo in contenedor.paragraphs:
+        _anonimizar_parrafo_docx(parrafo)
+    for tabla in contenedor.tables:
+        for fila in tabla.rows:
+            for celda in fila.cells:
+                _anonimizar_contenedor_docx(celda)
+
+
+def _anonimizar_textboxes_docx(doc):
+    """Anonimiza los párrafos dentro de cuadros de texto (w:txbxContent), que no
+    aparecen en doc.paragraphs. Reutiliza la lógica de párrafo (runs unidos)."""
+    try:
+        from docx.oxml.ns import qn
+        from docx.text.paragraph import Paragraph
+    except Exception:
+        return
+    for txbx in doc.element.iter(qn("w:txbxContent")):
+        for p_el in txbx.iter(qn("w:p")):
+            _anonimizar_parrafo_docx(Paragraph(p_el, None))
+
+
+def procesar_docx(ruta_entrada: str, ruta_salida: str):
+    doc = Document(ruta_entrada)
+    # Cuerpo principal (párrafos + tablas)
+    _anonimizar_contenedor_docx(doc)
+    # Encabezados y pies de cada sección (incluye variantes de primera página
+    # y páginas pares cuando el documento las define)
+    for seccion in doc.sections:
+        for parte in (
+            seccion.header, seccion.footer,
+            seccion.first_page_header, seccion.first_page_footer,
+            seccion.even_page_header, seccion.even_page_footer,
+        ):
+            _anonimizar_contenedor_docx(parte)
+    # Cuadros de texto del cuerpo
+    _anonimizar_textboxes_docx(doc)
+    doc.save(ruta_salida)
+    print(f"  DOCX guardado: {ruta_salida}")
+
+# =============================================================================
+# PARTE 9: Resolución de rutas y bucle principal
+# =============================================================================
+
+PROCESADORES = {
+    ".csv":  procesar_csv,
+    ".xlsx": procesar_xlsx,
+    ".md":   procesar_md,
+    ".docx": procesar_docx,
+}
+
+
+def ruta_salida_para(ruta_entrada: str) -> str:
+    if args.salida:
+        return args.salida
+    nombre, ext = os.path.splitext(os.path.basename(ruta_entrada))
+    nombre_anon = f"{nombre}_anon{ext}"
+    if args.carpeta_salida:
+        os.makedirs(args.carpeta_salida, exist_ok=True)
+        return os.path.join(args.carpeta_salida, nombre_anon)
+    return os.path.join(os.path.dirname(os.path.abspath(ruta_entrada)), nombre_anon)
+
+
+def recopilar_archivos(entradas: list) -> list:
+    rutas = []
+    for entrada in entradas:
+        entrada = os.path.abspath(entrada)
+        if os.path.isdir(entrada):
+            for nombre in os.listdir(entrada):
+                ruta = os.path.join(entrada, nombre)
+                if os.path.isfile(ruta):
+                    rutas.append(ruta)
+        elif os.path.isfile(entrada):
+            rutas.append(entrada)
+        else:
+            print(f"  [AVISO] No encontrado: {entrada}")
+    return rutas
+
+
+if not args.entradas:
+    parser.print_help()
+    sys.exit(0)
+
+if args.salida and len(args.entradas) > 1:
+    print("[ERROR] --salida solo es válido con un único archivo de entrada.")
+    sys.exit(1)
+
+archivos = recopilar_archivos(args.entradas)
+
+if not archivos:
+    print("No se encontraron archivos para procesar.")
+    sys.exit(0)
+
+print(f"Archivos a procesar: {len(archivos)}\n")
+for ruta_entrada in archivos:
+    _, extension = os.path.splitext(ruta_entrada)
+    extension = extension.lower()
+    if extension not in PROCESADORES:
+        print(f"  [OMITIDO] {ruta_entrada} (extensión no soportada)")
+        continue
+    ruta_salida = ruta_salida_para(ruta_entrada)
+    print(f"Procesando: {ruta_entrada}")
+    _reset_mapa()
+    try:
+        PROCESADORES[extension](ruta_entrada, ruta_salida)
+        _guardar_mapa(ruta_salida, ruta_entrada)
+        _reporte_cobertura()
+    except Exception as e:
+        print(f"  [ERROR] {e}")
