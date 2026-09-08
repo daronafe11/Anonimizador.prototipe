@@ -75,7 +75,7 @@ document.querySelector('#app').innerHTML = `
   </main>
 
   <footer class="site-footer"><div class="shell footer-inner"><a class="brand" href="#inicio"><span class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></span><span>Anonimizador</span></a><p>Privacidad para el trabajo que aún no quieres compartir.</p><nav aria-label="Enlaces del pie de página"><a href="#seguridad">Seguridad</a><a href="#seguridad">Privacidad</a><a href="mailto:hola@anonimizador.local">Contacto</a></nav></div></footer>
-  <div id="workspace-root"></div>
+  <div id="area-trabajo" data-workspace-root aria-label="Área de trabajo"></div>
 `;
 
 const revealItems = document.querySelectorAll('.reveal');
@@ -95,4 +95,4 @@ if (prefersReducedMotion) {
   revealItems.forEach((item) => revealObserver.observe(item));
 }
 
-mountWorkspace(document.querySelector('#workspace-root'));
+mountWorkspace(document.querySelector('[data-workspace-root]'));

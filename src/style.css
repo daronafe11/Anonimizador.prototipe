@@ -55,7 +55,9 @@ h1, h2, h3, p { margin-top: 0; } h1, h2 { font-family: var(--display); font-weig
 @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; }.reveal { opacity: 1; transform: none; transition: none; }.button, .nav-cta, .step { transition: none; } }
 
 /* Workspace */
-.workspace-shell { background: var(--paper); min-height: 100vh; }
+.workspace-shell { background: var(--paper); min-height: 100%; }
+#area-trabajo[hidden] { display: none; }
+#area-trabajo:not([hidden]) { background: var(--paper); inset: 0; overflow-y: auto; position: fixed; z-index: 10; }
 body.workspace-mode { background: var(--paper); }
 .workspace-header { background: var(--ink); color: var(--white); padding: 1.4rem max(1rem, calc((100% - var(--shell)) / 2)) 0; }
 .workspace-brand-row, .workspace-title-row { align-items: center; display: flex; justify-content: space-between; }
