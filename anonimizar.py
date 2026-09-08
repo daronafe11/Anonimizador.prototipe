@@ -44,32 +44,6 @@ import datetime
 
 JURISDICCIONES_DISPONIBLES = ["rgpd", "chile", "brasil", "mexico", "colombia", "argentina", "uk", "ccpa"]
 
-# Identificadores públicos y estables para CLI y futuro frontend.
-# Los valores son los tipos internos usados por Presidio.
-CATEGORIAS = {
-    "persona": "PERSON",
-    "email": "EMAIL_ADDRESS",
-    "telefono": "PHONE_NUMBER",
-    "iban": "IBAN_CODE",
-    "tarjeta": "CREDIT_CARD",
-    "fecha": "DATE_TIME",
-    "ip": "IP_ADDRESS",
-    "ubicacion": "LOCATION",
-    "direccion": "DIRECCION",
-    "dni-es": "DNI_NIE",
-    "rut-cl": "RUT_CL",
-    "cpf-br": "CPF_BR",
-    "cnpj-br": "CNPJ_BR",
-    "curp-mx": "CURP_MX",
-    "rfc-mx": "RFC_MX",
-    "nit-co": "NIT_CO",
-    "dni-ar": "DNI_AR",
-    "cuit-ar": "CUIT_AR",
-    "nino-uk": "NINO_UK",
-    "ssn-us": "SSN_US",
-    "dl-us": "DL_US",
-}
-
 parser = argparse.ArgumentParser(
     description="Anonimizador multi-jurisdiccional de datos personales.",
     formatter_class=argparse.RawTextHelpFormatter,
@@ -80,8 +54,6 @@ parser = argparse.ArgumentParser(
         "  python anonimizar.py C:/exports/ --ley rgpd\n"
         "  python anonimizar.py datos.csv --salida datos_limpio.csv --ley rgpd\n"
         "  python anonimizar.py C:/exports/ --carpeta-salida C:/anon/ --ley todo\n"
-        "  python anonimizar.py informe.docx --ley rgpd --excluir ubicacion dni-es\n"
-        "  python anonimizar.py informe.docx --ley rgpd --incluir persona email\n"
         "  python anonimizar.py datos_anon.csv --restaurar\n"
         "  python anonimizar.py datos_anon.csv --restaurar --mapa datos_anon.csv.key.json\n"
     )
@@ -117,19 +89,6 @@ parser.add_argument(
 parser.add_argument(
     "--lista-leyes", action="store_true",
     help="Muestra las jurisdicciones disponibles y termina."
-)
-parser.add_argument(
-    "--lista-categorias", action="store_true",
-    help="Muestra las categorías configurables disponibles y termina."
-)
-grupo_categorias = parser.add_mutually_exclusive_group()
-grupo_categorias.add_argument(
-    "--incluir", nargs="+", metavar="CATEGORIA",
-    help="Anonimiza solo las categorías indicadas. Consulta --lista-categorias."
-)
-grupo_categorias.add_argument(
-    "--excluir", nargs="+", metavar="CATEGORIA",
-    help="Anonimiza todo lo activo salvo las categorías indicadas."
 )
 parser.add_argument(
     "--restaurar", action="store_true",
@@ -202,22 +161,6 @@ if args.lista_leyes:
     for ley in JURISDICCIONES_DISPONIBLES:
         print(f"  {ley}")
     sys.exit(0)
-
-if args.lista_categorias:
-    print("Categorías disponibles:")
-    for categoria in CATEGORIAS:
-        print(f"  {categoria}")
-    sys.exit(0)
-
-categorias_solicitadas = set(args.incluir or args.excluir or [])
-categorias_invalidas = categorias_solicitadas - set(CATEGORIAS)
-if categorias_invalidas:
-    parser.error(
-        f"categoría(s) desconocida(s): {', '.join(sorted(categorias_invalidas))}. "
-        "Usa --lista-categorias para consultar los valores válidos."
-    )
-if args.restaurar and categorias_solicitadas:
-    parser.error("--incluir y --excluir solo se aplican al anonimizar.")
 
 # =============================================================================
 # Cifrado opcional del mapa (.key.json) — AES vía Fernet, clave derivada con PBKDF2
@@ -895,29 +838,6 @@ ENTIDADES = ENTIDADES_BASE + [
     )
 ]
 
-# Aplicar la selección al final, cuando ya se conocen las entidades disponibles
-# para las jurisdicciones elegidas. Sin flags, la lista queda intacta.
-if args.incluir:
-    tipos_incluidos = {CATEGORIAS[c] for c in args.incluir}
-    ENTIDADES = [e for e in ENTIDADES if e in tipos_incluidos]
-elif args.excluir:
-    tipos_excluidos = {CATEGORIAS[c] for c in args.excluir}
-    ENTIDADES = [e for e in ENTIDADES if e not in tipos_excluidos]
-
-CATEGORIAS_ACTIVAS = [
-    nombre for nombre, entidad in CATEGORIAS.items() if entidad in ENTIDADES
-]
-if not ENTIDADES:
-    parser.error("la selección no deja ninguna categoría activa para las jurisdicciones elegidas.")
-
-print(f"Categorías activas: {', '.join(CATEGORIAS_ACTIVAS)}\n")
-
-# LOCATION necesita PERSON como señal de contexto. Se puede analizar PERSON sin
-# anonimizarla cuando el usuario incluye ubicaciones pero excluye personas.
-ENTIDADES_ANALISIS = ENTIDADES.copy()
-if "LOCATION" in ENTIDADES and "PERSON" not in ENTIDADES_ANALISIS:
-    ENTIDADES_ANALISIS.append("PERSON")
-
 # =============================================================================
 # PARTE 5: Detección de exports de Screaming Frog
 # =============================================================================
@@ -1014,7 +934,6 @@ def _guardar_mapa(ruta_anon: str, archivo_origen: str):
     datos = {
         "version": "2.3",
         "ley": sorted(leyes_activas),
-        "categorias": CATEGORIAS_ACTIVAS,
         "fecha": datetime.datetime.now(datetime.timezone.utc).isoformat(),
         "archivo_origen": os.path.basename(archivo_origen),
         "advertencia": "Este archivo contiene datos personales originales. Trátalo con el mismo nivel de protección que el archivo fuente.",
@@ -1083,7 +1002,7 @@ def _detectar_spans(texto: str):
 
     resultados = analyzer.analyze(
         text=texto_para_analisis,
-        entities=ENTIDADES_ANALISIS,
+        entities=ENTIDADES,
         language=idioma
     )
 
@@ -1133,8 +1052,6 @@ def _aplicar_tokens(texto: str, resultados: list) -> str:
     para no invalidar los índices, actualizando el mapa global."""
     texto_anon = texto
     for resultado in sorted(resultados, key=lambda r: r.start, reverse=True):
-        if resultado.entity_type not in ENTIDADES:
-            continue
         valor_original = texto[resultado.start:resultado.end]
         token = _token_para(resultado.entity_type, valor_original)
         texto_anon = texto_anon[:resultado.start] + token + texto_anon[resultado.end:]

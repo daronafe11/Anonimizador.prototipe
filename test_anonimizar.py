@@ -147,53 +147,6 @@ class TestCifrado(unittest.TestCase):
             self.assertIn("12345678Z", f.read())
 
 
-class TestControlCategorias(unittest.TestCase):
-    """Cada ejecución puede activar o desactivar categorías sin cambiar los defaults."""
-
-    @classmethod
-    def setUpClass(cls):
-        cls.tmp = tempfile.mkdtemp(prefix="anon_cat_")
-
-        cls.excluir = os.path.join(cls.tmp, "excluir.csv")
-        with open(cls.excluir, "w", encoding="utf-8") as f:
-            f.write("nombre,ciudad,dni,email\nAna Ruiz,Sevilla,12345678Z,ana@example.com\n")
-        cls.res_excluir = _run([
-            cls.excluir, "--ley", "rgpd", "--excluir", "ubicacion", "dni-es"
-        ])
-
-        cls.incluir = os.path.join(cls.tmp, "incluir.csv")
-        with open(cls.incluir, "w", encoding="utf-8") as f:
-            f.write("nombre,dni,email\nAna Ruiz,12345678Z,ana@example.com\n")
-        cls.res_incluir = _run([
-            cls.incluir, "--ley", "rgpd", "--incluir", "dni-es"
-        ])
-
-    @classmethod
-    def tearDownClass(cls):
-        shutil.rmtree(cls.tmp, ignore_errors=True)
-
-    def test_excluir_conserva_solo_las_categorias_indicadas(self):
-        self.assertEqual(self.res_excluir.returncode, 0, self.res_excluir.stderr)
-        with open(os.path.join(self.tmp, "excluir_anon.csv"), encoding="utf-8") as f:
-            contenido = f.read()
-        self.assertIn("Sevilla", contenido)
-        self.assertIn("12345678Z", contenido)
-        self.assertNotIn("ana@example.com", contenido)
-
-    def test_incluir_no_activa_otras_categorias(self):
-        self.assertEqual(self.res_incluir.returncode, 0, self.res_incluir.stderr)
-        with open(os.path.join(self.tmp, "incluir_anon.csv"), encoding="utf-8") as f:
-            contenido = f.read()
-        self.assertIn("Ana Ruiz", contenido)
-        self.assertIn("ana@example.com", contenido)
-        self.assertNotIn("12345678Z", contenido)
-
-    def test_mapa_registra_configuracion(self):
-        with open(os.path.join(self.tmp, "incluir_anon.csv.key.json"), encoding="utf-8") as f:
-            datos = json.load(f)
-        self.assertEqual(datos["categorias"], ["dni-es"])
-
-
 class TestDeteccionYFormatos(unittest.TestCase):
     """Cubre lo frágil: NER de nombres, formatos .md/.docx end-to-end,
     contexto de ubicación por fila y ausencia de falsos positivos. Todos los
