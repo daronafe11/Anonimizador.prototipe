@@ -51,8 +51,7 @@ function workspaceMarkup() {
 
     <div class="workspace-content">
       <div class="workspace-alert" id="workspace-alert" role="alert" aria-live="assertive" hidden></div>
-      <section class="workspace-view is-visible" data-workspace-panel="anonymize" aria-labelledby="anonymize-title">
-        <div class="workspace-intro"><p class="workspace-kicker">Preparar anonimización</p><h2 id="anonymize-title">Protege un documento<br /><em>antes de compartirlo.</em></h2><p>Selecciona archivos, define el contexto legal y revisa la protección. En esta fase todo permanece en modo demostración.</p></div>
+      <section class="workspace-view is-visible" data-workspace-panel="anonymize" aria-label="Anonimizar documentos">
         <div class="workspace-columns"><form class="workspace-flow" id="anonymize-form" novalidate>
           <fieldset class="workspace-block"><legend><span>01</span> Añadir documentos</legend><p class="block-help">Admite CSV, XLSX, DOCX, MD y PDF. Hasta ${maxFileSizeLabel()} por archivo.</p><div class="dropzone" id="document-dropzone" role="button" tabindex="0" aria-controls="document-input"><span class="dropzone-icon" aria-hidden="true">↑</span><strong>Suelta tus documentos aquí</strong><span>o selecciona archivos desde tu equipo</span><label class="workspace-button button-secondary" for="document-input">Seleccionar archivos</label><input id="document-input" class="visually-hidden" type="file" accept=".csv,.xlsx,.docx,.md,.pdf" multiple /></div><div class="file-list" id="document-file-list"></div></fieldset>
           <fieldset class="workspace-block"><legend><span>02</span> Elegir jurisdicciones</legend><p class="block-help">Las reglas se aplicarán según el marco legal seleccionado. No hay ninguna opción elegida por defecto.</p><label class="check-row select-all-row"><input type="checkbox" id="select-all-jurisdictions" /><span class="custom-check" aria-hidden="true"></span><strong>Seleccionar todas</strong><small id="jurisdiction-count">0 de 8 seleccionadas</small></label><div class="jurisdiction-grid" id="jurisdiction-list"></div></fieldset>
@@ -71,10 +70,6 @@ function workspaceMarkup() {
 }
 
 function bindWorkspaceEvents(root) {
-  root.querySelectorAll('[data-workspace-view]').forEach((tab) => tab.addEventListener('click', () => {
-    setWorkspaceView(root, tab.dataset.workspaceView);
-  }));
-
   const documentInput = root.querySelector('#document-input');
   const documentDropzone = root.querySelector('#document-dropzone');
   documentInput.addEventListener('change', (event) => addDocuments(root, event.target.files));
@@ -117,8 +112,9 @@ function bindDropzone(dropzone, input, onFiles) {
 }
 
 function handleWorkspaceClick(event) {
-  const viewTrigger = event.target.closest('[data-workspace-view]');
+  const viewTrigger = event.target.closest('button[data-workspace-view]');
   if (viewTrigger) {
+    event.preventDefault();
     setWorkspaceView(event.currentTarget, viewTrigger.dataset.workspaceView);
     return;
   }
